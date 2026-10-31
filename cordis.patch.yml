@@ -1,0 +1,10 @@
+# dsh-task-guard · 任务级工具收窄
+# 顶层必须是数组；新增插件写 - insert: 再挂一个列表（写成 mapping 会被 Loader 拒绝）。
+- insert:
+    - id: task-guard
+      name: dsh-task-guard
+      config:
+        # 任务锁的存活上限（小时）。超过这个时间即使 pid 还活着，也当成僵尸锁回收。
+        lockTtlHours: 6
+        # 每轮末尾的尾巴提示开关（默认关：本插件不往上下文里塞东西）
+        hintEnabled: false

@@ -1,0 +1,6 @@
+node_modules/
+*.tgz
+.DS_Store
+# 任务状态文件不该进仓库（在 ~/.dsh/task-guard 下，这里兜底）
+usage.jsonl
+active.lock

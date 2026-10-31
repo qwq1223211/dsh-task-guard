@@ -45,6 +45,7 @@ import {
   existsSync,
 } from 'node:fs'
 import { estimateTaskCost, measureDeniedBytes } from './lib/cost-gate.js'
+import { buildPreview, summarizeGroups } from './lib/scope-preview.js'
 
 /** 插件名（DSH 里用于配置定位） */
 export const name = 'task-guard'
@@ -70,6 +71,13 @@ export const STATE_DIR =
 
 export const LOCK_FILE = join(STATE_DIR, 'active.lock')
 export const USAGE_FILE = join(STATE_DIR, 'usage.jsonl')
+
+/**
+ * "当前任务"快照文件。
+ * 【为什么要有它】客户端 UI（浏览器里跑的徽章）读不到 Host 进程的内存，
+ * 只能靠 HTTP 接口取状态。所以每次任务开始/结束时把快照写下来，UI 去读这个文件。
+ */
+export const CURRENT_FILE = join(STATE_DIR, 'current.json')
 
 /** 任务锁存活上限（毫秒）：超过就算僵尸锁，直接回收 */
 export const LOCK_TTL_MS = 6 * 3600 * 1000
@@ -258,6 +266,19 @@ export function appendRecord(record) {
 // 三、会话状态
 // ============================================================================
 
+/**
+ * 写"当前任务"快照（给 UI 读）。
+ * 失败不抛：UI 是锦上添花，不能因为它让任务开不起来。
+ * @param {object} state
+ */
+export function writeCurrent(state) {
+  try {
+    atomicWriteJson(CURRENT_FILE, { ...state, at: Date.now() })
+  } catch {
+    /* UI 快照失败不影响主流程 */
+  }
+}
+
 /** 每个会话当前在跑的任务：key → { taskId, groups, startedAt, dispose, applied, denyCount } */
 const activeTasks = new Map()
 
@@ -353,6 +374,11 @@ export function apply(ctx, config = {}) {
             type: 'boolean',
             description: 'Narrow even when the cost gate says it will not pay back — you accept one full-price rebuild.',
           },
+          dryRun: {
+            type: 'boolean',
+            description:
+              'Preview only: report what would be kept or removed plus availableGroups, without touching the tool table or taking the lock. Costs nothing. Use it to pick the right groups before committing.',
+          },
         },
         required: ['groups'],
       },
@@ -394,6 +420,9 @@ export function apply(ctx, config = {}) {
 
         const { deny, kept, unknownGroups } = computeDeny(toolNames, groups)
 
+        // 【B】把这台机器上真实存在的组列出来——否则调用方只能凭记忆猜组名。
+        const availableGroups = summarizeGroups(schemas, tagOf)
+
         // 【成本闸门】收窄 = 一次全价重建（实测 33 万上下文 ≈ 28 万全价 token）。
         // 数据由调用方给，拿不到就如实说"算不出来"，绝不猜。
         const deniedBytes = measureDeniedBytes(schemas, new Set(deny))
@@ -402,9 +431,28 @@ export function apply(ctx, config = {}) {
           turns: args?.turns,
           deniedBytes,
         })
+
+        // 【A】dryRun：只看不碰。不抢锁、不动工具表、不写任务状态，成本 0。
+        // 连成本闸门的拒绝也一并展示出来——你需要看到"为什么不该切"。
+        if (args?.dryRun === true) {
+          const preview = buildPreview({ deny, kept, availableGroups, groups })
+          appendRecord({ event: 'dry-run', groups, denyCount: deny.length, deniedBytes, gate: cost.reason })
+          return {
+            ok: true,
+            dryRun: true,
+            ...preview,
+            unknownGroups,
+            cost,
+            message:
+              `预览：会保留 ${preview.willKeep} 个、摘掉 ${preview.willDeny} 个。` +
+              (preview.missingGroups.length > 0 ? `这些组名在这台机器上不存在：${preview.missingGroups.join(', ')}。` : '') +
+              '确认无误后去掉 dryRun 再调一次。',
+          }
+        }
+
         if (!cost.allow && args?.force !== true) {
           appendRecord({ event: 'gate-refused', groups, denyCount: deny.length, deniedBytes, cost })
-          return { ok: false, code: 'COST_GATE', message: cost.message, cost }
+          return { ok: false, code: 'COST_GATE', message: cost.message, cost, availableGroups }
         }
 
         const taskId = newTaskId()
@@ -452,6 +500,21 @@ export function apply(ctx, config = {}) {
         }
         activeTasks.set(key, task)
 
+        // 给 UI 的快照（浏览器读不到内存，只能读文件）
+        writeCurrent({
+          active: true,
+          taskId,
+          groups,
+          goal: task.goal,
+          denyCount: deny.length,
+          keptCount: kept.length,
+          deniedBytes,
+          startedAt: task.startedAt,
+          applied: task.applied,
+          savingsPerTurn: cost.savingsPerTurn,
+          paybackTurns: cost.paybackTurns,
+        })
+
         appendRecord({
           event: 'start',
           taskId,
@@ -480,6 +543,8 @@ export function apply(ctx, config = {}) {
           keptCount: kept.length,
           applied: task.applied,
           unknownGroups,
+          // 【B】也带一份组清单：任务跑起来后你还想知道"当初如果有别的组可不可以选"
+          availableGroups,
           cost,
           note: '工具表已按任务收窄；结束时调 task_end 恢复。中途不要改。',
         }
@@ -513,6 +578,15 @@ export function apply(ctx, config = {}) {
         }
         releaseLock(task.taskId)
         activeTasks.delete(key)
+
+        // 告诉 UI：任务结束了
+        writeCurrent({
+          active: false,
+          taskId: task.taskId,
+          groups: task.groups,
+          denyCount: task.denyCount,
+          endedAt: Date.now(),
+        })
 
         const durationMs = Date.now() - task.startedAt
         appendRecord({

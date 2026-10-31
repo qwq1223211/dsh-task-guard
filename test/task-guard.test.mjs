@@ -16,6 +16,7 @@ const { apply, computeDeny, tagOf, USAGE_FILE, LOCK_FILE, readLock } = mod
 const { estimateTaskCost, measureDeniedBytes, FULL_PRICE_CONTEXT, MIN_TURNS_TO_PAYBACK } = await import(
   '../lib/cost-gate.js'
 )
+const { summarizeGroups, buildPreview } = await import('../lib/scope-preview.js')
 
 // 每个用例都从"没有锁"开始，否则前一个用例留下的锁会串到下一个
 beforeEach(() => {
@@ -283,4 +284,71 @@ test('task_start：通过闸门时把经济账一起返回来', async () => {
   assert.ok(out.cost, '要带 cost 报告')
   assert.ok(out.cost.savingsPerTurn > 0)
   assert.ok(typeof out.cost.paybackTurns === 'number')
+})
+
+// ============================================================================
+// 七、dryRun + availableGroups（"先看后付"）
+// ============================================================================
+
+test('summarizeGroups：按标签数工具，数量降序', () => {
+  const schemas = [
+    { name: 'read' },
+    { name: 'write' },
+    { name: 'unity_a' },
+    { name: 'unity_b' },
+    { name: 'unity_c' },
+    { name: 'plugin_manager' },
+  ]
+  const groups = summarizeGroups(schemas, tagOf)
+  assert.equal(groups.core, 2)
+  assert.equal(groups.unity, 3)
+  assert.equal(groups.plugin, 1)
+  assert.equal(Object.keys(groups)[0], 'unity', '数量最多的排最前')
+})
+
+test('buildPreview：点名了但机器上不存在的组要单独列出来', () => {
+  const preview = buildPreview({
+    deny: ['a'],
+    kept: ['read'],
+    availableGroups: { core: 1, unity: 3 },
+    groups: ['unity', 'snowluma'],
+  })
+  assert.deepEqual(preview.foundGroups, ['unity'])
+  assert.deepEqual(preview.missingGroups, ['snowluma'])
+  assert.equal(preview.willKeep, 1)
+  assert.equal(preview.willDeny, 1)
+})
+
+test('task_start(dryRun)：不碰工具表、不占锁，但要给出组清单和成本', async () => {
+  const env = makeEnv(TOOLS)
+  const out = await env.call('task_start', { groups: ['unity'], contextTokens: 300_000, turns: 2, dryRun: true })
+  assert.equal(out.ok, true)
+  assert.equal(out.dryRun, true)
+  assert.equal(env.restricts.length, 0, 'dryRun 绝不能动工具表')
+  assert.equal(readLock(), null, 'dryRun 绝不能占锁')
+  assert.ok(out.availableGroups && out.availableGroups.unity >= 1, '要给出可选的组')
+  assert.ok(out.willDeny > 0)
+  assert.ok(out.keepSample.length > 0)
+})
+
+test('task_start(dryRun)：即使闸门会拒，也要把账算给你看', async () => {
+  const env = makeEnv(TOOLS)
+  const out = await env.call('task_start', { groups: ['unity'], contextTokens: 300_000, turns: 2, dryRun: true })
+  assert.equal(out.ok, true, 'dryRun 不该被闸门拦（它没花钱）')
+  assert.equal(out.cost.allow, false)
+  assert.ok(out.cost.message.includes('拒绝收窄'))
+})
+
+test('task_start(dryRun)：组名写错时要明确提示', async () => {
+  const env = makeEnv(TOOLS)
+  const out = await env.call('task_start', { groups: ['snowluma'], dryRun: true })
+  assert.deepEqual(out.missingGroups, ['snowluma'])
+  assert.ok(out.message.includes('不存在'))
+})
+
+test('task_start：真正开任务时也带 availableGroups（方便事后复盘）', async () => {
+  const env = makeEnv(TOOLS)
+  const out = await env.call('task_start', { groups: ['unity'] })
+  assert.equal(out.ok, true)
+  assert.ok(out.availableGroups && out.availableGroups.core >= 1)
 })

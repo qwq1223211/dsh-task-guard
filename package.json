@@ -7,7 +7,9 @@
   "description": "Task-scoped tool narrowing for DSH: narrow the tool table once when a task starts (deny-only), restore it when the task ends. Ships a cross-process task lock and a taskId-tagged usage log. Zero dependencies.",
   "exports": {
     ".": "./index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "dsh": {
     "bundle": {
@@ -21,7 +23,9 @@
     "index.js",
     "lib/*.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "locale/*.json",
+    "icon.svg"
   ],
   "scripts": {
     "test": "node test/task-guard.test.mjs"

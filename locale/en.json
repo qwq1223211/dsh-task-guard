@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task guard",
+    "description": "Narrows the tool table to the named groups at task start (deny-only) and restores it at task end; ships a cross-process lock, a cost gate and a usage ledger."
+  }
+}

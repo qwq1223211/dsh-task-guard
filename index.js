@@ -501,6 +501,15 @@ export function apply(ctx, config = {}) {
         activeTasks.set(key, task)
 
         // 给 UI 的快照（浏览器读不到内存，只能读文件）
+        // 【v0.4.0】除了数字，也把**具体工具名**写进去：面板要能回答"保留了什么、砍了什么"。
+        const countByTag = (names) => {
+          const out = {}
+          for (const name of names) {
+            const tag = tagOf(name)
+            out[tag] = (out[tag] || 0) + 1
+          }
+          return out
+        }
         writeCurrent({
           active: true,
           taskId,
@@ -508,6 +517,9 @@ export function apply(ctx, config = {}) {
           goal: task.goal,
           denyCount: deny.length,
           keptCount: kept.length,
+          keptTools: kept,
+          deniedTools: deny,
+          deniedByTag: countByTag(deny),
           deniedBytes,
           startedAt: task.startedAt,
           applied: task.applied,

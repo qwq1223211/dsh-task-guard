@@ -591,12 +591,14 @@ export function apply(ctx, config = {}) {
         releaseLock(task.taskId)
         activeTasks.delete(key)
 
-        // 告诉 UI：任务结束了
+        // 告诉 UI：任务结束了（保留工具总数，好让徽章显示"工具表：全开（N 个）"）
         writeCurrent({
           active: false,
           taskId: task.taskId,
           groups: task.groups,
           denyCount: task.denyCount,
+          keptCount: Math.max(0, (task.knownTools || 0) - task.denyCount),
+          knownTools: task.knownTools,
           endedAt: Date.now(),
         })
 

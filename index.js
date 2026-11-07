@@ -84,6 +84,14 @@ export const CURRENT_FILE = join(STATE_DIR, 'current.json')
  * 用途：认领建议、徽章空态显示工具数——这些都不该依赖"当前是否有任务"。
  */
 export const REGISTRY_FILE = join(STATE_DIR, 'tool-registry.json')
+/**
+ * UI 请求通道（v0.6.0）。
+ * 浏览器没法直接调工具，所以徽章把「收窄 / 恢复」写进 request.json，
+ * 本插件在下一次工具调用前消费掉（不额外起定时器）。
+ */
+export const REQUEST_FILE = join(STATE_DIR, 'request.json')
+/** 处理结果，供 UI 显示"成功/失败原因" */
+export const RESULT_FILE = join(STATE_DIR, 'request-result.json')
 
 /** 任务锁存活上限（毫秒）：超过就算僵尸锁，直接回收 */
 export const LOCK_TTL_MS = 6 * 3600 * 1000
@@ -681,4 +689,126 @@ export function apply(ctx, config = {}) {
       },
     }),
   )
+
+  // --------------------------------------------------------------------------
+  // UI 请求通道（v0.6.0）：浏览器写 request.json，这里在下一次工具调用前消费
+  // --------------------------------------------------------------------------
+  // 为什么挂在 pre-execute：浏览器没有调用工具的权限，而 pre-execute 是唯一
+  // 每轮都会发生、且能拿到 agent 作用域（restrict 必须作用在 agent.ctx.tools）的位置。
+  let lastUiRequestId = ''
+  ctx.effect(() =>
+    ctx.on('tools/pre-execute', (...args) => {
+      const downstream = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : null
+      const exec = args[0]
+      try {
+        consumeUiRequest(exec)
+      } catch {
+        // 消费失败不能影响工具调用
+      }
+      return downstream ? downstream() : { kind: 'allow' }
+    }),
+  )
+
+  function consumeUiRequest(exec) {
+    let request = null
+    try {
+      request = JSON.parse(readFileSync(REQUEST_FILE, 'utf8'))
+    } catch {
+      return
+    }
+    if (!request || typeof request.id !== 'string' || request.id === lastUiRequestId) return
+    const age = Date.now() - (Number(request.ts) || 0)
+    if (!(age >= 0 && age < 60 * 1000)) return // 过期请求不执行
+
+    const key = keyOf(exec)
+    const agent = exec && exec.agent && typeof exec.agent === 'object' ? exec.agent : null
+    const scoped = agent && agent.ctx && agent.ctx.tools ? agent.ctx.tools : null
+    const result = { id: request.id, action: String(request.action || ''), at: Date.now(), ok: false }
+
+    try {
+      if (request.action === 'end') {
+        const task = activeTasks.get(key)
+        if (!task) {
+          result.error = '当前会话没有进行中的任务'
+        } else {
+          try {
+            if (typeof task.dispose === 'function') task.dispose()
+          } catch {
+            /* 释放失败也要把状态清掉 */
+          }
+          releaseLock(task.taskId)
+          activeTasks.delete(key)
+          writeCurrent({
+            active: false,
+            taskId: task.taskId,
+            groups: task.groups,
+            denyCount: task.denyCount,
+            keptCount: Math.max(0, (task.knownTools || 0) - task.denyCount),
+            knownTools: task.knownTools,
+            endedAt: Date.now(),
+          })
+          appendRecord({ event: 'end', taskId: task.taskId, key, reason: 'ui-request' })
+          result.ok = true
+        }
+      } else if (request.action === 'start') {
+        if (!scoped || typeof scoped.restrict !== 'function') {
+          result.error = '拿不到 agent 作用域的工具表（这条消息还没调用过工具？）'
+        } else {
+          const groups = Array.isArray(request.groups) ? request.groups.filter((g) => typeof g === 'string' && g) : []
+          const schemas = typeof scoped.schemas === 'function' ? scoped.schemas() : []
+          const toolNames = schemas.map((t) => (t && typeof t.name === 'string' ? t.name : '')).filter(Boolean)
+          const { deny, kept } = computeDeny(toolNames, new Set(groups))
+          const deniedBytes = measureDeniedBytes(schemas, new Set(deny))
+          const taskId = newTaskId()
+          const dispose = deny.length > 0 ? scoped.restrict({ deny: deny.filter((n) => n !== 'run_code') }) : null
+          activeTasks.set(key, {
+            taskId,
+            groups,
+            goal: '（UI 手动收窄）',
+            startedAt: Date.now(),
+            dispose,
+            applied: Boolean(dispose),
+            denyCount: deny.length,
+            knownTools: toolNames.length,
+          })
+          try {
+            acquireLock({ taskId, groups, cwd: process.cwd() })
+          } catch {
+            // 锁被别的进程占着也允许 UI 收窄，不阻塞
+          }
+          atomicWriteJson(REGISTRY_FILE, { at: Date.now(), count: toolNames.length, tools: toolNames })
+          writeCurrent({
+            active: true,
+            taskId,
+            groups,
+            goal: '（UI 手动收窄）',
+            denyCount: deny.length,
+            keptCount: kept.length,
+            keptTools: kept,
+            deniedTools: deny,
+            deniedBytes,
+            startedAt: Date.now(),
+            applied: Boolean(dispose),
+            savingsPerTurn: Math.round(deniedBytes * 0.3),
+            paybackTurns: null,
+          })
+          appendRecord({ event: 'start', taskId, key, groups, denyCount: deny.length, by: 'ui-request' })
+          result.ok = true
+          result.taskId = taskId
+          result.denyCount = deny.length
+        }
+      } else {
+        result.error = `未知动作：${request.action}`
+      }
+    } catch (error) {
+      result.error = String((error && error.message) || error).slice(0, 160)
+    }
+
+    lastUiRequestId = request.id
+    try {
+      atomicWriteJson(RESULT_FILE, result)
+    } catch {
+      /* 结果写不进去不影响主流程 */
+    }
+  }
 }

@@ -1,7 +1,6 @@
 {
   "name": "dsh-task-guard",
-  "version": "0.6.1",
-  "private": true,
+  "version": "0.6.2",
   "type": "module",
   "main": "./index.js",
   "description": "Task-scoped tool narrowing for DSH: narrow the tool table once when a task starts (deny-only), restore it when the task ends. Ships a cross-process task lock and a taskId-tagged usage log. Zero dependencies.",
@@ -34,7 +33,17 @@
     "dsh-plugin",
     "context-caching",
     "task-scope",
-    "deepseek-harness"
+    "deepseek-harness",
+    "tools",
+    "context-cache"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qwq1223211/dsh-task-guard.git"
+  },
+  "homepage": "https://github.com/qwq1223211/dsh-task-guard#readme",
+  "bugs": {
+    "url": "https://github.com/qwq1223211/dsh-task-guard/issues"
+  }
 }

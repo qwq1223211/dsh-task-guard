@@ -78,6 +78,12 @@ export const USAGE_FILE = join(STATE_DIR, 'usage.jsonl')
  * 只能靠 HTTP 接口取状态。所以每次任务开始/结束时把快照写下来，UI 去读这个文件。
  */
 export const CURRENT_FILE = join(STATE_DIR, 'current.json')
+/**
+ * 全量工具清单（v0.5.0）。
+ * task_start（含 dryRun）会把它写下来；task_end 不影响它。
+ * 用途：认领建议、徽章空态显示工具数——这些都不该依赖"当前是否有任务"。
+ */
+export const REGISTRY_FILE = join(STATE_DIR, 'tool-registry.json')
 
 /** 任务锁存活上限（毫秒）：超过就算僵尸锁，直接回收 */
 export const LOCK_TTL_MS = 6 * 3600 * 1000
@@ -419,6 +425,15 @@ export function apply(ctx, config = {}) {
           .filter(Boolean)
 
         const { deny, kept, unknownGroups } = computeDeny(toolNames, groups)
+
+        // 【v0.5.0】持久工具清单：dryRun 也会写（不花重建成本）。
+        // 为什么需要：task_end 之后的快照里没有名单，而"认领建议 / 空态显示工具数"
+        // 都需要一份全量工具名。这份文件是唯一的长期来源。
+        try {
+          atomicWriteJson(REGISTRY_FILE, { at: Date.now(), count: toolNames.length, tools: toolNames })
+        } catch {
+          // 写不了就算了，不影响任务
+        }
 
         // 【B】把这台机器上真实存在的组列出来——否则调用方只能凭记忆猜组名。
         const availableGroups = summarizeGroups(schemas, tagOf)

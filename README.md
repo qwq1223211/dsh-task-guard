@@ -46,9 +46,31 @@ dsh plugin --profile desktop add link:C:/path/to/dsh-task-guard
 |---|---|
 | `active.lock` | 跨进程任务锁：`{ taskId, pid, startedAt, groups }`，原子写（tmp + rename） |
 | `usage.jsonl` | 每次 `start` / `end` 一行，带 `taskId`、`denyCount`、`durationMs`，字段名与 minimal-router 的探针记录保持一致，便于一起分析 |
+| `current.json` | 给 UI 的快照：`active`、`groups`、`denyCount`、`keptCount`、`keptTools`、`deniedTools`、`savingsPerTurn`… |
+| `tool-registry.json` | **全量工具清单**（v0.5.0）：`task_start`（**含 dryRun**）时写入，任务结束也不删。认领建议和徽章空态都靠它 |
+| `mode.json` | `{"mode":"auto"\|"manual"}`（v0.6.0）：**谁来决定工具表**。徽章写，minimal-router 读 |
+| `request.json` | UI 发来的手动动作（v0.6.0）：`{id, action:'start'\|'end', groups, ts}` |
+| `request-result.json` | 上一次动作的结果：`{id, ok, error}`，UI 用它显示成功/失败原因 |
 
 > 放家目录而不是包目录：包目录在 pnpm 安装下是只读的，写进去升级就丢。
 > 测试可用 `TASK_GUARD_DIR` 环境变量覆盖。
+
+### UI 请求通道（v0.6.0）
+
+浏览器调不了工具，所以徽章的动作走"文件邮箱"：
+
+```
+徽章面板 → POST /task-guard/action（badge 插件的 host 路由）
+        → 写 request.json
+        → 本插件在**下一次 tools/pre-execute** 里消费
+        → restrict({deny}) / dispose()  → 写 request-result.json
+```
+
+**为什么是 pre-execute**：`restrict()` 必须作用在 `agent.ctx.tools` 上，而 pre-execute 是
+唯一每轮都会发生、且能拿到那个作用域的位置（不用额外起定时器）。
+
+三条保护：超过 60 秒的请求不执行、同一个 `id` 只执行一次、失败把原因写进结果文件。
+
 
 ## 成本闸门（v0.2.0）
 
